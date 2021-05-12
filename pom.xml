@@ -7,7 +7,7 @@
     <groupId>wbif.sjx</groupId>
     <artifactId>CustomMIATools</artifactId>
     <packaging>pom</packaging>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <name>CustomMIATools</name>
     <url>https://github.com/SJCross/CustomMIATools</url>
     <inceptionYear>2019</inceptionYear>
@@ -84,9 +84,10 @@
 
     <modules>
         <module>AddPositionFromMeasurement_v0-11-5</module>
+        <module>AutoSubstack_v0-9-26</module>
     </modules>
 
-    <build>
+    <!-- <build>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -102,5 +103,5 @@
                 </executions>
             </plugin>
         </plugins>
-    </build>
+    </build> -->
 </project>
