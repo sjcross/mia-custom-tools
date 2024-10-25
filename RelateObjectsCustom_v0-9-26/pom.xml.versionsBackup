@@ -5,11 +5,11 @@
     <parent>
         <artifactId>CustomMIATools</artifactId>
         <groupId>wbif.sjx</groupId>
-        <version>1.2.0</version>
+        <version>1.1.0</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
-    <artifactId>AutoSubstack_v0-9-26</artifactId>
+    <artifactId>RelateObjectsCustom_v0-9-26</artifactId>
     <packaging>jar</packaging>
 
     <repositories>
@@ -17,7 +17,7 @@
             <id>scijava.public</id>
             <url>https://maven.scijava.org/content/groups/public</url>
         </repository>
-
+        
         <repository>
             <id>jitpack.io</id>
             <url>https://jitpack.io</url>

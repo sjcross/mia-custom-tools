@@ -9,7 +9,7 @@
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
-    <artifactId>AutoSubstack_v0-9-26</artifactId>
+    <artifactId>RelateObjectsCustom_v0-9-26</artifactId>
     <packaging>jar</packaging>
 
     <repositories>
