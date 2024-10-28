@@ -2,12 +2,14 @@ package wbif.sjx.RelateObjectsCustom;
 
 import ij.ImagePlus;
 import wbif.sjx.MIA.Module.ImageProcessing.Pixel.Binary.DistanceMap;
+import wbif.sjx.MIA.Module.ObjectProcessing.Identification.ProjectObjects;
 import wbif.sjx.MIA.Module.ImageProcessing.Pixel.InvertIntensity;
 import wbif.sjx.MIA.Module.ImageProcessing.Pixel.ProjectImage;
 import wbif.sjx.MIA.Module.Module;
 import wbif.sjx.MIA.Module.PackageNames;
 import wbif.sjx.MIA.Object.*;
 import wbif.sjx.MIA.Object.Parameters.*;
+import wbif.sjx.common.Exceptions.IntegerOverflowException;
 import wbif.sjx.common.Object.Point;
 import wbif.sjx.common.Object.Volume;
 
@@ -31,7 +33,7 @@ public class RelateObjectsCustom extends Module {
     public static final String MINIMUM_PERCENTAGE_OVERLAP = "Minimum percentage overlap";
     public static final String REQUIRE_CENTROID_OVERLAP = "Require centroid overlap";
     public final static String LINK_IN_SAME_FRAME = "Only link objects in same frame";
-    public static final String ONLY_CONSIDER_IN_2D = "Only consider in 2D";
+    public static final String THREE_D_MODE = "3D mode";
 
     public final static String OUTPUT_SEPARATOR = "Object output";
     public static final String MERGE_RELATED_OBJECTS = "Merge related objects";
@@ -65,6 +67,15 @@ public class RelateObjectsCustom extends Module {
 
     }
 
+    public interface ThreeDModes {
+        String TWO_D = "2D (projection)";
+        String SLICE_BY_SLICE = "Slice-by-slice (2.5D)";
+        String THREE_D = "3D";
+
+        String[] ALL = new String[] { TWO_D, SLICE_BY_SLICE, THREE_D };
+
+    }
+
     public interface Measurements {
         String DIST_SURFACE_PX = "DIST_TO_${PARENT}_SURF_(PX)";
         String DIST_CENTROID_PX = "DIST_TO_${PARENT}_CENT_(PX)";
@@ -77,10 +88,16 @@ public class RelateObjectsCustom extends Module {
 
     }
 
-    public static String getFullName(String measurement, String parentName, boolean in2D) {
+    public static String getFullName(String measurement, String parentName, String threeDMode) {
         String measName = Units.replace("RELATE_OBJ // " + measurement.replace("${PARENT}", parentName));
-        if (in2D)
-            measName = measName + "_(2D)";
+        switch (threeDMode) {
+            case ThreeDModes.TWO_D:
+                measName = measName + "_(2D)";
+                break;
+            case ThreeDModes.SLICE_BY_SLICE:
+                measName = measName + "_(2.5D)";
+                break;
+        }
 
         return measName;
 
@@ -110,11 +127,11 @@ public class RelateObjectsCustom extends Module {
         String referencePoint = parameters.getValue(REFERENCE_POINT);
         boolean limitLinking = parameters.getValue(LIMIT_LINKING_BY_DISTANCE);
         double linkingDistance = parameters.getValue(LINKING_DISTANCE);
-        boolean only2D = parameters.getValue(ONLY_CONSIDER_IN_2D);
+        String threeDMode = parameters.getValue(THREE_D_MODE);
 
         if (!referencePoint.equals(ReferencePoints.CENTROID_TO_SURFACE)
                 && !referencePoint.equals(ReferencePoints.SURFACE))
-            only2D = false;
+            threeDMode = ThreeDModes.THREE_D;
 
         String moduleName = RelateObjectsCustom.class.getSimpleName();
 
@@ -125,6 +142,13 @@ public class RelateObjectsCustom extends Module {
             double minDist = Double.MAX_VALUE;
             Obj minLink = null;
             double dpp = childObject.getDistPerPxXY();
+
+            Obj projChildObject = null;
+            if (threeDMode.equals(ThreeDModes.TWO_D))
+                try {
+                    projChildObject = ProjectObjects.createProjection(childObject, "ProjChild", childObject.is2D());
+                } catch (IntegerOverflowException e) {
+                }
 
             for (Obj parentObject : parentObjects.values()) {
                 if (linkInSameFrame & parentObject.getT() != childObject.getT())
@@ -145,10 +169,25 @@ public class RelateObjectsCustom extends Module {
                         break;
 
                     case ReferencePoints.SURFACE:
-                        if (only2D)
-                            dist = new InPlaneSurfaceSeparationCalculator(childObject, parentObject, true).getMinDist();
-                        else
-                            dist = childObject.getSurfaceSeparation(parentObject, true);
+                        dist = 0;
+                        switch (threeDMode) {
+                            case ThreeDModes.TWO_D:
+                                Obj projParentObject;
+                                try {
+                                    projParentObject = ProjectObjects.createProjection(parentObject, "ProjParent",
+                                            parentObject.is2D());
+                                    dist = projChildObject.getSurfaceSeparation(projParentObject, true);
+                                } catch (IntegerOverflowException e) {
+                                }
+                                break;
+                            case ThreeDModes.SLICE_BY_SLICE:
+                                dist = new InPlaneSurfaceSeparationCalculator(childObject, parentObject, true)
+                                        .getMinDist();
+                                break;
+                            case ThreeDModes.THREE_D:
+                                dist = childObject.getSurfaceSeparation(parentObject, true);
+                                break;
+                        }
 
                         if (Math.abs(dist) < Math.abs(minDist)) {
                             if (limitLinking && Math.abs(dist) > linkingDistance)
@@ -179,9 +218,17 @@ public class RelateObjectsCustom extends Module {
                             double yDist = childYCent - parentY[i];
                             double zDist = childZCent - parentZ[i];
 
-                            // Checking if we should only be using centroids and surfaces in the same plane
-                            if (only2D && zDist != 0)
-                                continue;
+                            switch (threeDMode) {
+                                case ThreeDModes.TWO_D:
+                                    // Z separation doesn't matter
+                                    zDist = 0;
+                                    break;
+                                case ThreeDModes.SLICE_BY_SLICE:
+                                    // Only process if in the same plane
+                                    if (zDist != 0)
+                                        continue;
+                                    break;
+                            }
 
                             dist = Math.sqrt(xDist * xDist + yDist * yDist + zDist * zDist);
                             if (dist < Math.abs(minDist)) {
@@ -207,7 +254,7 @@ public class RelateObjectsCustom extends Module {
             // fractional distance
             if (referencePoint.equals(ReferencePoints.CENTROID_TO_SURFACE)
                     && parameters.getValue(INSIDE_OUTSIDE_MODE).equals(InsideOutsideModes.INSIDE_ONLY)) {
-                calculateFractionalDistance(childObject, minLink, minDist, only2D);
+                calculateFractionalDistance(childObject, minLink, minDist, threeDMode);
             }
 
             // Applying the inside outside mode (doesn't apply for centroid-centroid
@@ -218,14 +265,14 @@ public class RelateObjectsCustom extends Module {
             }
 
             // Adding measurements to the input object
-            applyMeasurements(childObject, parentObjects, minDist, minLink, only2D);
+            applyMeasurements(childObject, parentObjects, minDist, minLink, threeDMode);
 
             writeMessage("Processed " + (iter++) + " of " + numberOfChildren + " objects");
 
         }
     }
 
-    public void calculateFractionalDistance(Obj childObject, Obj parentObject, double minDist, boolean only2D) {
+    public void calculateFractionalDistance(Obj childObject, Obj parentObject, double minDist, String threeDMode) {
         // Calculating the furthest distance to the edge
         if (parentObject.getMeasurement("MAX_DIST") == null) {
             // Creating an image for the parent object
@@ -245,13 +292,13 @@ public class RelateObjectsCustom extends Module {
         // Adding measurement
         double maxDist = parentObject.getMeasurement("MAX_DIST").getValue();
         double frac = Math.abs(minDist / maxDist);
-        String measurementName = getFullName(Measurements.DIST_CENT_SURF_FRAC, parentObject.getName(), only2D);
+        String measurementName = getFullName(Measurements.DIST_CENT_SURF_FRAC, parentObject.getName(), threeDMode);
         childObject.addMeasurement(new Measurement(measurementName, frac));
 
     }
 
     public void applyMeasurements(Obj childObject, ObjCollection parentObjects, double minDist, Obj minLink,
-            boolean only2D) {
+            String threeDMode) {
         String referencePoint = parameters.getValue(REFERENCE_POINT);
 
         if (minLink != null) {
@@ -262,25 +309,27 @@ public class RelateObjectsCustom extends Module {
             switch (referencePoint) {
                 case ReferencePoints.CENTROID: {
                     String measurementName = getFullName(Measurements.DIST_CENTROID_PX, parentObjects.getName(),
-                            only2D);
+                            threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, minDist));
-                    measurementName = getFullName(Measurements.DIST_CENTROID_CAL, parentObjects.getName(), only2D);
+                    measurementName = getFullName(Measurements.DIST_CENTROID_CAL, parentObjects.getName(), threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, minDist * dpp));
 
                     break;
                 }
                 case ReferencePoints.SURFACE: {
-                    String measurementName = getFullName(Measurements.DIST_SURFACE_PX, parentObjects.getName(),only2D);
+                    String measurementName = getFullName(Measurements.DIST_SURFACE_PX, parentObjects.getName(),
+                            threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, minDist));
-                    measurementName = getFullName(Measurements.DIST_SURFACE_CAL, parentObjects.getName(),only2D);
+                    measurementName = getFullName(Measurements.DIST_SURFACE_CAL, parentObjects.getName(), threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, minDist * dpp));
 
                     break;
                 }
                 case ReferencePoints.CENTROID_TO_SURFACE: {
-                    String measurementName = getFullName(Measurements.DIST_CENT_SURF_PX, parentObjects.getName(),only2D);
+                    String measurementName = getFullName(Measurements.DIST_CENT_SURF_PX, parentObjects.getName(),
+                            threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, minDist));
-                    measurementName = getFullName(Measurements.DIST_CENT_SURF_CAL, parentObjects.getName(),only2D);
+                    measurementName = getFullName(Measurements.DIST_CENT_SURF_CAL, parentObjects.getName(), threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, minDist * dpp));
 
                     break;
@@ -290,25 +339,28 @@ public class RelateObjectsCustom extends Module {
         } else {
             switch (referencePoint) {
                 case ReferencePoints.CENTROID: {
-                    String measurementName = getFullName(Measurements.DIST_CENTROID_PX, parentObjects.getName(),only2D);
+                    String measurementName = getFullName(Measurements.DIST_CENTROID_PX, parentObjects.getName(),
+                            threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, Double.NaN));
-                    measurementName = getFullName(Measurements.DIST_CENTROID_CAL, parentObjects.getName(),only2D);
+                    measurementName = getFullName(Measurements.DIST_CENTROID_CAL, parentObjects.getName(), threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, Double.NaN));
 
                     break;
                 }
                 case ReferencePoints.SURFACE: {
-                    String measurementName = getFullName(Measurements.DIST_SURFACE_PX, parentObjects.getName(),only2D);
+                    String measurementName = getFullName(Measurements.DIST_SURFACE_PX, parentObjects.getName(),
+                            threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, Double.NaN));
-                    measurementName = getFullName(Measurements.DIST_SURFACE_CAL, parentObjects.getName(),only2D);
+                    measurementName = getFullName(Measurements.DIST_SURFACE_CAL, parentObjects.getName(), threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, Double.NaN));
 
                     break;
                 }
                 case ReferencePoints.CENTROID_TO_SURFACE: {
-                    String measurementName = getFullName(Measurements.DIST_CENT_SURF_PX, parentObjects.getName(),only2D);
+                    String measurementName = getFullName(Measurements.DIST_CENT_SURF_PX, parentObjects.getName(),
+                            threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, Double.NaN));
-                    measurementName = getFullName(Measurements.DIST_CENT_SURF_CAL, parentObjects.getName(),only2D);
+                    measurementName = getFullName(Measurements.DIST_CENT_SURF_CAL, parentObjects.getName(), threeDMode);
                     childObject.addMeasurement(new Measurement(measurementName, Double.NaN));
 
                     break;
@@ -358,7 +410,8 @@ public class RelateObjectsCustom extends Module {
 
         int nCombined = parentObjects.size() * childObjects.size();
         int count = 0;
-        String overlapMeasurementName = getFullName(Measurements.OVERLAP_PC, parentObjects.getName(),false);
+        String overlapMeasurementName = getFullName(Measurements.OVERLAP_PC, parentObjects.getName(),
+                ThreeDModes.THREE_D);
 
         // Runs through each child object against each parent object
         for (Obj parentObject : parentObjects.values()) {
@@ -407,7 +460,8 @@ public class RelateObjectsCustom extends Module {
                 childObject.addParent(parentObject);
 
                 // Adding the overlap as a measurement
-                Measurement measurement = new Measurement(getFullName(Measurements.OVERLAP_PC, parentObject.getName(),false));
+                Measurement measurement = new Measurement(
+                        getFullName(Measurements.OVERLAP_PC, parentObject.getName(), ThreeDModes.THREE_D));
                 measurement.setValue(overlap);
                 childObject.addMeasurement(measurement);
 
@@ -575,7 +629,7 @@ public class RelateObjectsCustom extends Module {
         parameters.add(new DoubleP(MINIMUM_PERCENTAGE_OVERLAP, this, 0d));
         parameters.add(new BooleanP(REQUIRE_CENTROID_OVERLAP, this, true));
         parameters.add(new BooleanP(LINK_IN_SAME_FRAME, this, true));
-        parameters.add(new BooleanP(ONLY_CONSIDER_IN_2D, this, false));
+        parameters.add(new ChoiceP(THREE_D_MODE, this, ThreeDModes.THREE_D, ThreeDModes.ALL));
 
         parameters.add(new ParamSeparatorP(OUTPUT_SEPARATOR, this));
         parameters.add(new BooleanP(MERGE_RELATED_OBJECTS, this, false));
@@ -606,7 +660,7 @@ public class RelateObjectsCustom extends Module {
                 if (referencePoint.equals(ReferencePoints.CENTROID_TO_SURFACE)
                         || referencePoint.equals(ReferencePoints.SURFACE)) {
                     returnedParameters.add(parameters.getParameter(INSIDE_OUTSIDE_MODE));
-                    returnedParameters.add(parameters.getParameter(ONLY_CONSIDER_IN_2D));
+                    returnedParameters.add(parameters.getParameter(THREE_D_MODE));
                 }
 
                 break;
@@ -658,43 +712,42 @@ public class RelateObjectsCustom extends Module {
         String childObjectsName = parameters.getValue(CHILD_OBJECTS);
         String parentObjectName = parameters.getValue(PARENT_OBJECTS);
         String referencePoint = parameters.getValue(REFERENCE_POINT);
-        boolean only2D = parameters.getValue(ONLY_CONSIDER_IN_2D);
+        String threeDMode = parameters.getValue(THREE_D_MODE);
 
         if (!referencePoint.equals(ReferencePoints.CENTROID_TO_SURFACE)
                 && !referencePoint.equals(ReferencePoints.SURFACE))
-            only2D = false;
-
+            threeDMode = ThreeDModes.THREE_D;
 
         if (parentObjectName == null || childObjectsName == null)
             return objectMeasurementRefs;
 
-        String measurementName = getFullName(Measurements.DIST_SURFACE_PX, parentObjectName, only2D);
+        String measurementName = getFullName(Measurements.DIST_SURFACE_PX, parentObjectName, threeDMode);
         MeasurementRef distSurfPx = objectMeasurementRefs.getOrPut(measurementName);
         distSurfPx.setDescription("Shortest distance between the surface of this object and that of the closest \""
                 + parentObjectName + "\" object.  Negative values indicate this object is inside the relevant \""
                 + parentObjectName + "\" object. Measured in pixel units.");
 
-        measurementName = getFullName(Measurements.DIST_SURFACE_CAL, parentObjectName, only2D);
+        measurementName = getFullName(Measurements.DIST_SURFACE_CAL, parentObjectName, threeDMode);
         MeasurementRef distSurfCal = objectMeasurementRefs.getOrPut(measurementName);
 
-        measurementName = getFullName(Measurements.DIST_CENTROID_PX, parentObjectName, only2D);
+        measurementName = getFullName(Measurements.DIST_CENTROID_PX, parentObjectName, threeDMode);
         MeasurementRef distCentPx = objectMeasurementRefs.getOrPut(measurementName);
         distCentPx.setDescription("Distance between the centroid of this object and that of the closest \""
                 + parentObjectName + "\"object.  Measured in pixel units.");
 
-        measurementName = getFullName(Measurements.DIST_CENTROID_CAL, parentObjectName, only2D);
+        measurementName = getFullName(Measurements.DIST_CENTROID_CAL, parentObjectName, threeDMode);
         MeasurementRef distCentCal = objectMeasurementRefs.getOrPut(measurementName);
 
-        measurementName = getFullName(Measurements.DIST_CENT_SURF_PX, parentObjectName, only2D);
+        measurementName = getFullName(Measurements.DIST_CENT_SURF_PX, parentObjectName, threeDMode);
         MeasurementRef distCentSurfPx = objectMeasurementRefs.getOrPut(measurementName);
         distCentSurfPx.setDescription("Shortest distance between the centroid of this object and the surface of the " +
                 "closest \"" + parentObjectName + "\" object.  Negative values indicate this object is inside the " +
                 "relevant \"" + parentObjectName + "\" object. Measured in pixel units.");
 
-        measurementName = getFullName(Measurements.DIST_CENT_SURF_CAL, parentObjectName, only2D);
+        measurementName = getFullName(Measurements.DIST_CENT_SURF_CAL, parentObjectName, threeDMode);
         MeasurementRef distCentSurfCal = objectMeasurementRefs.getOrPut(measurementName);
 
-        measurementName = getFullName(Measurements.DIST_CENT_SURF_FRAC, parentObjectName, only2D);
+        measurementName = getFullName(Measurements.DIST_CENT_SURF_FRAC, parentObjectName, threeDMode);
         MeasurementRef distCentSurfFrac = objectMeasurementRefs.getOrPut(measurementName);
         distCentSurfFrac
                 .setDescription("Shortest distance between the centroid of this object and the surface of the " +
@@ -702,7 +755,7 @@ public class RelateObjectsCustom extends Module {
                         + "\" object.  Calculated as a fraction of the furthest possible distance " +
                         "to the \"" + parentObjectName + "\" surface.");
 
-        measurementName = getFullName(Measurements.OVERLAP_PC, parentObjectName, false);
+        measurementName = getFullName(Measurements.OVERLAP_PC, parentObjectName, ThreeDModes.THREE_D);
         MeasurementRef overlapPercentage = objectMeasurementRefs.getOrPut(measurementName);
         overlapPercentage
                 .setDescription("Percentage of pixels that overlap with the \"" + parentObjectName + "\" object " +
