@@ -2,6 +2,7 @@ package wbif.sjx.RelateObjectsCustom;
 
 import ij.ImagePlus;
 import wbif.sjx.MIA.Module.ImageProcessing.Pixel.Binary.DistanceMap;
+import wbif.sjx.MIA.Module.ObjectProcessing.Identification.ExtractObjectEdges;
 import wbif.sjx.MIA.Module.ObjectProcessing.Identification.ProjectObjects;
 import wbif.sjx.MIA.Module.ImageProcessing.Pixel.InvertIntensity;
 import wbif.sjx.MIA.Module.ImageProcessing.Pixel.ProjectImage;
@@ -172,11 +173,17 @@ public class RelateObjectsCustom extends Module {
                         dist = 0;
                         switch (threeDMode) {
                             case ThreeDModes.TWO_D:
-                                Obj projParentObject;
+                                Obj edgeParentObject;
                                 try {
-                                    projParentObject = ProjectObjects.createProjection(parentObject, "ProjParent",
-                                            parentObject.is2D());
-                                    dist = projChildObject.getSurfaceSeparation(projParentObject, true);
+                                    Obj projParentObject = ProjectObjects.createProjection(parentObject, "ProjParent",
+                                            parentObject.is2D());                                            
+                                    edgeParentObject = ExtractObjectEdges.getObjectEdge(projParentObject,new ObjCollection("Edges"),ExtractObjectEdges.EdgeModes.DISTANCE_FROM_EDGE, 1, 1);
+                                    dist = projChildObject.getSurfaceSeparation(edgeParentObject, true);
+                                    
+                                    // Inverting if inside
+                                    if (projChildObject.getOverlap(projParentObject) > 0)
+                                        dist = -dist;
+
                                 } catch (IntegerOverflowException e) {
                                 }
                                 break;
